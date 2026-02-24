@@ -101,21 +101,23 @@ SSH into your EC2 instance.
 sudo apt update && sudo apt upgrade -y
 ```
 
+##### Set hostname (optional but recommended):
+
+```bash
+hostnamectl set-hostname k8s-master
+```
+
+##### Ensure hostname resolves:
+
+```bash
+echo "127.0.1.1 k8s-master" >> /etc/hosts
+```
+
 #### Disable swap (required)
 
 ```bash
 sudo swapoff -a
 sudo sed -i '/ swap / s/^/#/' /etc/fstab
-```
-
-#### Install containerd
-
-```bash
-sudo apt install -y containerd
-sudo mkdir -p /etc/containerd
-containerd config default | sudo tee /etc/containerd/config.toml
-sudo systemctl restart containerd
-sudo systemctl enable containerd
 ```
 
 #### Enable required kernel modules
@@ -128,6 +130,77 @@ EOF
 
 sudo modprobe overlay
 sudo modprobe br_netfilter
+```
+
+#### Enable required kernel modules
+
+```bash
+cat <<EOF | tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables
+= 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward
+= 1
+EOF
+```
+
+Apply:
+
+```bash
+sysctl --system
+```
+
+#### Install containerd
+
+Install dependencies
+
+```bash
+apt install -y ca-certificates curl gnupg lsb-release
+```
+
+Install containerd
+
+```bash
+sudo apt install -y containerd
+```
+
+Generate default config
+
+```bash
+sudo mkdir -p /etc/containerd
+containerd config default | sudo tee /etc/containerd/config.toml
+```
+
+#### 🔥 CRITICAL: Enable systemd cgroups (required for k8s)
+
+Edit config:
+
+```bash
+nano /etc/containerd/config.toml
+```
+
+Find:
+```bash
+SystemdCgroup = false
+```
+
+Change to:
+
+```bash
+SystemdCgroup = true
+```
+
+Restart containerd:
+
+```bash
+systemctl restart containerd
+systemctl enable containerd
+```
+
+Verify:
+
+```bash
+containerd --version
 ```
 
 #### Add Kubernetes repo
@@ -150,11 +223,23 @@ sudo apt install -y kubelet kubeadm kubectl
 sudo apt-mark hold kubelet kubeadm kubectl
 ```
 
+Enable kubelet:
+
+```bash
+systemctl enable kubelet
+```
+
+
 #### Initialize Cluster
 
 ```bash
-sudo kubeadm init --pod-network-cidr=192.168.0.0/16
+sudo kubeadm init \
+  --pod-network-cidr=192.168.0.0/16 \
+  --cri-socket=unix:///run/containerd/containerd.sock
 ```
+
+⚠️ **Save the `kubeadm join` output** — even though this is single-node, it matters later.
+
 
 Configure kubectl:
 
@@ -164,10 +249,25 @@ sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
 sudo chown $(id -u):$(id -g) $HOME/.kube/config
 ```
 
+(Optional) Enable kubectl autocomplete
+```bash
+apt install -y bash-completion
+kubectl completion bash > /etc/bash_completion.d/kubectl
+source ~/.bashrc
+```
+
 #### Allow scheduling on control plane
+
+Remove taint:
 
 ```bash
 kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+```
+
+Verify:
+
+```bash
+kubectl describe node | grep Taint
 ```
 
 #### Install Calico CNI

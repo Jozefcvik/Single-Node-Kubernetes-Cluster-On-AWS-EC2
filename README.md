@@ -1,5 +1,9 @@
 # Single Node Kubernetes on AWS EC2 (t3.small) 🚀
 
+
+![Kubernetes deployment architecture on AWS EC2](kubernetes-deployment-architecture-on-AWS-EC2.png)
+
+
 This guide explains step-by-step how to deploy a **single-node Kubernetes cluster** on:
 
 - **AWS EC2 t3.small**

@@ -124,7 +124,22 @@ spec:
   hostPath:
     path: /mnt/data/postgresql
 ```
-### ✅ 2. StatefulSet
+### ✅ 2. Headless Service
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: database
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+```
+### ✅ 3. StatefulSet
 ```yaml
 apiVersion: apps/v1
 kind: StatefulSet
@@ -164,26 +179,12 @@ spec:
       name: pgdata
     spec:
       storageClassName: ""
+      volumeName: pg-pv
       accessModes:
         - ReadWriteOnce
       resources:
         requests:
           storage: 5Gi
-```
-### ✅ 3. Headless Service
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: database
-spec:
-  clusterIP: None
-  selector:
-    app: postgres
-  ports:
-    - port: 5432
-      targetPort: 5432
 ```
 ### 🚀 Apply in correct order
 ```bash
@@ -204,63 +205,167 @@ Pod → Running
 ```
 
 ## 🚀 Step 2: Install Keycloak with external PostgreSQL
-### 1️⃣ Add Keycloak Helm repo
+### ✅ 1. Deployment
 ```bash
-helm repo add codecentric https://codecentric.github.io/helm-charts
-helm repo update
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.3.3
+          args: ["start-dev"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL_HOST
+              value: postgres.database.svc.cluster.local
+            - name: KC_DB_URL_PORT
+              value: "5432"
+            - name: KC_DB_URL_DATABASE
+              value: keycloak
+            - name: KC_DB_USERNAME
+              value: keycloak
+            - name: KC_DB_PASSWORD
+              value: supersecretpassword
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: admin
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              value: admin123
 ```
-### 2️⃣ Create keycloak-values.yaml
+### ✅ 2. Service
 ```bash
-replicaCount: 1   # single-node cluster (use 2+ in real prod)
-
-postgresql:
-  enabled: false
-
-externalDatabase:
-  host: postgres-postgresql.database.svc.cluster.local
-  user: keycloak
-  password: supersecretpassword
-  database: keycloak
-  port: 5432
-
-proxyAddressForwarding: true
-
-extraEnv: |
-  - name: KC_PROXY
-    value: edge
-  - name: KC_HTTP_RELATIVE_PATH
-    value: /auth
-
-ingress:
-  enabled: true
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  selector:
+    app: keycloak
+  ports:
+    - port: 80
+      targetPort: 8080
+```
+### ✅ 3. Ingress
+```bash
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keycloak
+  namespace: keycloak
   annotations:
     kubernetes.io/ingress.class: nginx
-  hosts:
+spec:
+  rules:
     - host: keycloak.local
-      paths:
-        - path: /auth
-          pathType: Prefix
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: keycloak
+                port:
+                  number: 80
 ```
-### 3️⃣ Install Keycloak
+**🚀 Apply in correct order**
 ```bash
-kubectl create namespace keycloak
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+kubectl apply -f ingress.yaml
+```
+**Verify everything is running**
 
-helm install keycloak codecentric/keycloak \
-  -n keycloak \
-  -f keycloak-values.yaml
-```
-## 🌐 Step 3: Configure access
-**Update** /etc/hosts
-```bash
-172.16.10.109 keycloak.local
-```
-**Access Keycloak**
-```bash
-http://keycloak.local/auth
-```
-## 🔍 Step 4: Verify everything
+Before logging in, make sure all components are healthy:
 ```bash
 kubectl get pods -n keycloak
-kubectl get ingress -n keycloak
-kubectl describe ingress -n keycloak
+kubectl get pods -n database
 ```
+
+You want:
+- Keycloak pod → Running
+- Postgres pod → Running
+
+Check logs if needed:
+```bash
+kubectl logs -n keycloak deploy/keycloak
+```
+Look for:
+```bash
+Keycloak started in ...
+```
+### ✅ 4. Access Keycloak
+Add to your '/etc/hosts':
+```bash
+127.0.0.1 keycloak.local
+```
+Then open:
+```bash
+http://keycloak.local:<ingress-http-port>
+```
+### ✅ 5. First Login (Admin Console)
+
+**1. Open Admin Console**
+Go to:
+```bash
+http://keycloak.local:<ingress-http-port>/admin
+```
+Login with:
+```bash
+Username: admin
+Password: admin123
+```
+(from your env vars)
+
+**2. Create a new permanent admin user**
+Go to:
+```bash
+Users → Add user
+```
+
+Fill in:
+- Username: admin2 (or anything you prefer)
+- Click **Create**
+
+**3. Set password**
+- Go to **Credentials** tab
+- Set password
+- Turn OFF “Temporary”
+- Save
+
+**4. Assign admin role**
+
+This is the important part 👇
+- Go to Role Mappings
+- Click Assign role
+- Filter by: realm-management
+- Add:
+  - realm-admin
+ 
+**5. Log out and log back in**
+
+Logout, then login with your new user:
+```bash
+admin2 / your-password
+```
+
+**6. Delete temporary admin user**
+
+Now remove the bootstrap user:
+- Go to **Users**
+- Find admin
+- Delete it
